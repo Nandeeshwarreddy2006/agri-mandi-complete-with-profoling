@@ -71,6 +71,16 @@ def normalize_crop_value(x):
     return CROP_MAP.get(str(x).strip().lower(), np.nan)
 
 
+def normalize_mandi_value(x):
+    if pd.isna(x):
+        return np.nan
+    s = str(x).strip().upper()
+    match = re.search(r"(\d+)", s)
+    if match:
+        return f"MANDI{int(match.group(1)):03d}"
+    return s
+
+
 def find_column(df, candidates):
     """Find the first available column from a list."""
     for col in candidates:
@@ -1082,7 +1092,7 @@ else:
 
 
 # ============================================================
-# AGENTIC AI
+# AGENTIC GRAPH AI
 # ============================================================
 
 st.divider()
@@ -1091,255 +1101,612 @@ st.header("🤖 Agentic Graph AI")
 
 st.markdown(
     """
-    Ask a business question in natural language and the agent will
-    select an appropriate analytical view and generate a business insight.
+    Ask a business question in natural language. The agent converts the
+    question into an intent, extracts entities, applies filters, builds an
+    explainable analytical query, creates a dataframe, selects the chart
+    type, renders a Plotly visualization and produces an insight summary.
     """
 )
 
-
 question = st.text_input(
     "💬 Ask a business question",
-    placeholder="Example: Show market price vs MSP for Wheat"
+    placeholder="Example: Show the daily arrival trend of Wheat"
+)
+
+st.caption(
+    "Pipeline: Natural Language → Intent → Entities → Filters → "
+    "SQL Query → DataFrame → Chart Selection → Plotly → Insight Summary"
 )
 
 
 # ============================================================
-# AGENT
+# AGENT HELPER FUNCTIONS
+# ============================================================
+
+def detect_agent_intent(q):
+    """Return a clear business intent from a natural-language question."""
+    q = q.lower()
+
+    if (
+        ("price" in q and "msp" in q)
+        or "market price" in q
+        or "price vs" in q
+        or "price comparison" in q
+    ):
+        return "Price vs MSP"
+
+    if (
+        ("arrival" in q or "arrivals" in q)
+        and ("trend" in q or "daily" in q or "over time" in q)
+    ):
+        return "Daily Arrival Trend"
+
+    if (
+        ("highest" in q or "most" in q or "top" in q)
+        and "crop" in q
+    ):
+        return "Top Crops by Arrivals"
+
+    if (
+        "mandi" in q
+        and ("highest" in q or "top" in q or "most" in q)
+    ):
+        return "Top Mandis by Arrivals"
+
+    if (
+        "rain" in q
+        or "rainfall" in q
+        or "weather" in q
+    ):
+        return "Weather Impact"
+
+    if (
+        "transit" in q
+        or "transport" in q
+        or "logistics" in q
+    ):
+        return "Logistics Performance"
+
+    return "Unknown"
+
+
+def extract_crop_entity(q):
+    """Extract a crop entity and map aliases to canonical crop names."""
+    q_lower = q.lower()
+
+    aliases = {
+        "wheat": "Wheat",
+        "gehun": "Wheat",
+        "gehu": "Wheat",
+        "kanak": "Wheat",
+        "गेहूं": "Wheat",
+
+        "rice": "Rice",
+        "paddy": "Rice",
+        "dhan": "Rice",
+        "dhaan": "Rice",
+        "basmati": "Rice",
+        "chawal": "Rice",
+        "धान": "Rice",
+        "चावल": "Rice",
+
+        "maize": "Maize",
+        "corn": "Maize",
+        "makka": "Maize",
+        "makki": "Maize",
+        "मक्का": "Maize",
+
+        "cotton": "Cotton",
+        "kapas": "Cotton",
+        "narma": "Cotton",
+        "कपास": "Cotton",
+
+        "mustard": "Mustard",
+        "sarso": "Mustard",
+        "sarson": "Mustard",
+        "सरसों": "Mustard",
+
+        "sugarcane": "Sugarcane",
+        "ganna": "Sugarcane",
+        "ganne": "Sugarcane",
+        "गन्ना": "Sugarcane"
+    }
+
+    # Check longer aliases first.
+    for alias in sorted(aliases, key=len, reverse=True):
+        if alias in q_lower:
+            return aliases[alias]
+
+    return None
+
+
+def extract_mandi_entity(q, arrivals_df):
+    """Try to extract a mandi name or mandi ID from the question."""
+    q_lower = q.lower()
+
+    # Prefer known mandi IDs.
+    if "mandi_id" in arrivals_df.columns:
+        for value in arrivals_df["mandi_id"].dropna().astype(str).unique():
+            if value.lower() in q_lower:
+                return value
+
+    # Then try known mandi names if present.
+    mandi_name_col = find_column(
+        arrivals_df,
+        ["mandi_name", "mandi"]
+    )
+
+    if mandi_name_col:
+        names = (
+            arrivals_df[mandi_name_col]
+            .dropna()
+            .astype(str)
+            .unique()
+        )
+
+        for value in sorted(names, key=len, reverse=True):
+            if value.lower() in q_lower:
+                return value
+
+    # Common example mentioned in the challenge.
+    if "amritsar" in q_lower:
+        return "Amritsar"
+
+    return None
+
+
+def extract_time_entity(q):
+    """Extract a simple time-period entity from natural language."""
+    q_lower = q.lower()
+
+    if "last 7 days" in q_lower or "past 7 days" in q_lower:
+        return "Last 7 Days"
+
+    if "last 30 days" in q_lower or "past 30 days" in q_lower:
+        return "Last 30 Days"
+
+    if "last 90 days" in q_lower or "past 90 days" in q_lower:
+        return "Last 90 Days"
+
+    if "last month" in q_lower or "past month" in q_lower:
+        return "Last 30 Days"
+
+    if "last week" in q_lower or "past week" in q_lower:
+        return "Last 7 Days"
+
+    return "Current Dashboard Period"
+
+
+def agent_sql(intent, crop=None, mandi=None, time_entity=None):
+    """Generate an explainable SQL representation of the selected intent."""
+    crop_condition = ""
+    mandi_condition = ""
+
+    if crop:
+        crop_condition = (
+            f" AND crop_name = '{crop}'"
+        )
+
+    if mandi:
+        mandi_condition = (
+            f" AND mandi_id = '{mandi}'"
+        )
+
+    if intent == "Price vs MSP":
+        return (
+            "SELECT date, AVG(modal_price) AS market_price, "
+            "AVG(msp) AS msp "
+            "FROM prices_fact "
+            f"WHERE modal_price IS NOT NULL AND msp IS NOT NULL"
+            f"{crop_condition}{mandi_condition} "
+            "GROUP BY date ORDER BY date;"
+        )
+
+    if intent == "Daily Arrival Trend":
+        return (
+            "SELECT date, SUM(arrival_quantity_qtl) AS arrivals_qtl "
+            "FROM arrivals_fact "
+            f"WHERE arrival_quantity_qtl IS NOT NULL"
+            f"{crop_condition}{mandi_condition} "
+            "GROUP BY date ORDER BY date;"
+        )
+
+    if intent == "Top Crops by Arrivals":
+        return (
+            "SELECT crop_name, SUM(arrival_quantity_qtl) AS arrivals_qtl "
+            "FROM arrivals_fact "
+            "WHERE arrival_quantity_qtl IS NOT NULL "
+            "GROUP BY crop_name ORDER BY arrivals_qtl DESC LIMIT 10;"
+        )
+
+    if intent == "Top Mandis by Arrivals":
+        return (
+            "SELECT mandi_id, SUM(arrival_quantity_qtl) AS arrivals_qtl "
+            "FROM arrivals_fact "
+            "WHERE arrival_quantity_qtl IS NOT NULL "
+            "GROUP BY mandi_id ORDER BY arrivals_qtl DESC LIMIT 10;"
+        )
+
+    if intent == "Weather Impact":
+        return (
+            "SELECT date, rainfall_mm, temp_c, humidity_percent "
+            "FROM weather_daily ORDER BY date;"
+        )
+
+    if intent == "Logistics Performance":
+        return (
+            "SELECT destination_warehouse, "
+            "AVG(transit_hours) AS avg_transit_hours "
+            "FROM transport_fact "
+            "WHERE transit_hours IS NOT NULL "
+            "GROUP BY destination_warehouse "
+            "ORDER BY avg_transit_hours DESC;"
+        )
+
+    return "-- No analytical SQL generated for this question."
+
+
+def apply_agent_filters(df, crop=None, mandi=None):
+    """Apply extracted crop and mandi entities to a dataframe."""
+    result = df.copy()
+
+    if crop is not None and "_agent_crop" in result.columns:
+        result = result[
+            result["_agent_crop"].astype(str).str.lower()
+            == crop.lower()
+        ]
+
+    if mandi is not None and "mandi_id" in result.columns:
+        result = result[
+            result["mandi_id"].astype(str).str.lower()
+            == mandi.lower()
+        ]
+
+    return result
+
+
+def agent_insight_summary(
+    intent,
+    result,
+    crop=None,
+    mandi=None
+):
+    """Create a concise data-driven business insight."""
+    if result is None or result.empty:
+        return "No matching records were available for this question."
+
+    if intent == "Price vs MSP":
+        market = result["_agent_modal_price"].mean()
+        msp = result["_agent_msp"].mean()
+
+        if pd.isna(market) or pd.isna(msp) or msp == 0:
+            return "Price and MSP values were insufficient to calculate the gap."
+
+        gap_pct = (market - msp) / msp * 100
+
+        direction = "above" if gap_pct >= 0 else "below"
+
+        crop_text = f" for {crop}" if crop else ""
+        return (
+            f"Average market price is ₹{market:,.0f} versus "
+            f"MSP of ₹{msp:,.0f}{crop_text}, with the market price "
+            f"{abs(gap_pct):.1f}% {direction} MSP."
+        )
+
+    if intent == "Daily Arrival Trend":
+        if "_agent_quantity" not in result.columns:
+            return "Arrival quantity was unavailable."
+
+        daily = (
+            result.dropna(subset=["_agent_date"])
+            .groupby("_agent_date")["_agent_quantity"]
+            .sum()
+            .sort_index()
+        )
+
+        if len(daily) < 2:
+            return "Not enough dated observations were available to identify a trend."
+
+        first = daily.iloc[0]
+        last = daily.iloc[-1]
+
+        if first == 0:
+            change_text = "from a zero starting point"
+        else:
+            change = (last - first) / first * 100
+            change_text = f"a {change:+.1f}% change from the first displayed day"
+
+        crop_text = f" for {crop}" if crop else ""
+        return (
+            f"Daily arrivals{crop_text} show {change_text} "
+            f"across the displayed period."
+        )
+
+    if intent == "Top Crops by Arrivals":
+        if "_agent_crop" not in result.columns:
+            return "Crop information was unavailable."
+
+        summary = (
+            result.groupby("_agent_crop")["_agent_quantity"]
+            .sum()
+            .sort_values(ascending=False)
+        )
+
+        if summary.empty:
+            return "No crop arrival totals were available."
+
+        top = summary.index[0]
+        value = summary.iloc[0]
+
+        return (
+            f"{top} has the highest total recorded arrivals at "
+            f"{value:,.0f} Qtl."
+        )
+
+    if intent == "Top Mandis by Arrivals":
+        if "mandi_id" not in result.columns:
+            return "Mandi information was unavailable."
+
+        summary = (
+            result.groupby("mandi_id")["_agent_quantity"]
+            .sum()
+            .sort_values(ascending=False)
+        )
+
+        if summary.empty:
+            return "No mandi arrival totals were available."
+
+        top = summary.index[0]
+        value = summary.iloc[0]
+
+        return (
+            f"{top} has the highest recorded arrivals at "
+            f"{value:,.0f} Qtl."
+        )
+
+    if intent == "Weather Impact":
+        if "rainfall_mm" in result.columns:
+            rainfall = pd.to_numeric(
+                result["rainfall_mm"],
+                errors="coerce"
+            ).mean()
+
+            if pd.notna(rainfall):
+                return (
+                    f"Average daily rainfall in the weather dataset is "
+                    f"{rainfall:.1f} mm. This can be used alongside "
+                    f"arrival trends to assess weather-related supply pressure."
+                )
+
+        return "Weather records are available for comparison with supply trends."
+
+    if intent == "Logistics Performance":
+        if "_transit_hours" in result.columns:
+            avg_transit = result["_transit_hours"].mean()
+
+            if pd.notna(avg_transit):
+                return (
+                    f"Average recorded transit time is "
+                    f"{avg_transit:.1f} hours. Higher transit values "
+                    f"indicate potential logistics pressure."
+                )
+
+        return "Logistics records are available for transit-performance analysis."
+
+    return "The agent could not generate a business insight."
+
+
+# ============================================================
+# RUN AGENT
 # ============================================================
 
 if st.button("🔎 Analyze Question"):
 
     if not question.strip():
-
-        st.warning("Please enter a question.")
+        st.warning("Please enter a business question.")
 
     else:
+        q = question.strip()
 
-        q = question.lower().strip()
-
+        # Load clean agent data.
         agent_arrivals, agent_prices, agent_mandi = load_agent_data()
 
-        # ----------------------------------------------------
-        # EXTRACT CROP
-        # ----------------------------------------------------
+        # Ensure mandi IDs are standardized for entity filtering.
+        for df in [agent_arrivals, agent_prices]:
+            if "mandi_id" in df.columns:
+                df["mandi_id"] = df["mandi_id"].apply(
+                    normalize_mandi_value
+                )
 
-        known_crops = [
-            "wheat",
-            "rice",
-            "maize",
-            "corn",
-            "cotton",
-            "mustard",
-            "sugarcane",
-            "paddy",
-            "basmati"
-        ]
+        # --------------------------------------------------------
+        # 1. NATURAL LANGUAGE
+        # --------------------------------------------------------
 
-        detected_crop = None
+        st.markdown("### 🗣️ 1. Natural Language Question")
+        st.code(q, language="text")
 
-        for crop in known_crops:
+        # --------------------------------------------------------
+        # 2. INTENT EXTRACTION
+        # --------------------------------------------------------
 
-            if crop in q:
+        intent = detect_agent_intent(q)
 
-                detected_crop = crop
-                break
+        # --------------------------------------------------------
+        # 3. ENTITY EXTRACTION
+        # --------------------------------------------------------
 
+        crop_entity = extract_crop_entity(q)
+        mandi_entity = extract_mandi_entity(q, agent_arrivals)
+        time_entity = extract_time_entity(q)
 
-        # ----------------------------------------------------
-        # PRICE VS MSP
-        # ----------------------------------------------------
+        entity_col1, entity_col2, entity_col3 = st.columns(3)
 
-        if (
-            "price" in q
-            and "msp" in q
-        ):
-
-            result = agent_prices.copy()
-
-            if detected_crop and "_agent_crop" in result.columns:
-
-                result = result[
-                    result["_agent_crop"]
-                    .astype(str)
-                    .str.contains(
-                        detected_crop,
-                        case=False,
-                        na=False
-                    )
-                ]
-
-            result = result.dropna(
-                subset=[
-                    "_agent_modal_price",
-                    "_agent_msp"
-                ]
+        with entity_col1:
+            st.metric(
+                "Intent",
+                intent
             )
 
-            if "_agent_date" in result.columns:
+        with entity_col2:
+            st.metric(
+                "Crop Entity",
+                crop_entity if crop_entity else "Not specified"
+            )
+
+        with entity_col3:
+            st.metric(
+                "Time Entity",
+                time_entity
+            )
+
+        if mandi_entity:
+            st.info(f"🏪 **Mandi Entity:** {mandi_entity}")
+
+        if intent == "Unknown":
+            st.warning(
+                "The agent could not confidently identify the business intent."
+            )
+            st.info(
+                "Try: Show market price vs MSP for Wheat | "
+                "Show the daily arrival trend of Wheat | "
+                "Which crop has the highest total arrivals? | "
+                "Which mandis have the highest arrivals?"
+            )
+
+        else:
+
+            # ----------------------------------------------------
+            # 4. FILTERS
+            # ----------------------------------------------------
+
+            st.markdown("### 🔎 4. Filters Applied")
+
+            active_filters = []
+
+            if crop_entity:
+                active_filters.append(f"Crop = {crop_entity}")
+
+            if mandi_entity:
+                active_filters.append(f"Mandi = {mandi_entity}")
+
+            if time_entity != "Current Dashboard Period":
+                active_filters.append(f"Time = {time_entity}")
+
+            # Also show dashboard-level filters.
+            if selected_crop != "All":
+                active_filters.append(
+                    f"Dashboard Crop = {selected_crop}"
+                )
+
+            if selected_mandi != "All":
+                active_filters.append(
+                    f"Dashboard Mandi = {selected_mandi}"
+                )
+
+            if time_period != "All Time":
+                active_filters.append(
+                    f"Dashboard Time = {time_period}"
+                )
+
+            if active_filters:
+                st.write(" • ".join(active_filters))
+            else:
+                st.write("No additional filters applied.")
+
+            # ----------------------------------------------------
+            # 5. SQL QUERY
+            # ----------------------------------------------------
+
+            st.markdown("### 🧾 5. Generated SQL Query")
+
+            sql_text = agent_sql(
+                intent,
+                crop=crop_entity,
+                mandi=mandi_entity,
+                time_entity=time_entity
+            )
+
+            st.code(sql_text, language="sql")
+
+            st.caption(
+                "The SQL shown is the agent's explainable analytical query plan. "
+                "The deployed app executes the equivalent operation on the "
+                "clean pandas dataframes, so no external database is required."
+            )
+
+            # ----------------------------------------------------
+            # 6. DATAFRAME + 7. CHART SELECTION
+            # ----------------------------------------------------
+
+            if intent == "Price vs MSP":
+
+                result = apply_agent_filters(
+                    agent_prices,
+                    crop=crop_entity,
+                    mandi=mandi_entity
+                )
 
                 result = result.dropna(
-                    subset=["_agent_date"]
-                )
-
-                result = result.sort_values(
-                    "_agent_date"
-                )
-
-            if result.empty:
-
-                st.warning(
-                    "No valid price and MSP records were found for this question."
-                )
-
-            else:
-
-                st.success(
-                    "📊 Agent selected: Market Price vs MSP line chart"
-                )
-
-                result_daily = (
-                    result
-                    .groupby("_agent_date", as_index=False)
-                    .agg(
-                        _agent_modal_price=("_agent_modal_price", "mean"),
-                        _agent_msp=("_agent_msp", "mean")
-                    )
-                    .sort_values("_agent_date")
-                )
-
-                fig = px.line(
-                    result_daily,
-                    x="_agent_date",
-                    y=[
+                    subset=[
                         "_agent_modal_price",
                         "_agent_msp"
-                    ],
-                    markers=True,
-                    title=(
-                        "Daily Average Market Price vs MSP"
-                        + (
-                            f" — {detected_crop.title()}"
-                            if detected_crop
-                            else ""
-                        )
+                    ]
+                )
+
+                if "_agent_date" in result.columns:
+                    result = result.dropna(
+                        subset=["_agent_date"]
                     )
-                )
 
-                fig.update_layout(
-                    xaxis_title="Date",
-                    yaxis_title="Price (₹)",
-                    height=500
-                )
-
-                st.plotly_chart(
-                    fig,
-                    use_container_width=True
-                )
-
-                avg_market = result[
-                    "_agent_modal_price"
-                ].mean()
-
-                avg_msp_value = result[
-                    "_agent_msp"
-                ].mean()
-
-                gap = avg_market - avg_msp_value
-
-                gap_percent = (
-                    gap / avg_msp_value * 100
-                    if avg_msp_value != 0
-                    else np.nan
-                )
-
-                if gap > 0:
-
-                    insight = (
-                        f"Market price is approximately "
-                        f"{abs(gap_percent):.1f}% above MSP."
+                if result.empty:
+                    st.warning(
+                        "No valid price and MSP records were found "
+                        "for this question."
                     )
 
                 else:
-
-                    insight = (
-                        f"Market price is approximately "
-                        f"{abs(gap_percent):.1f}% below MSP."
+                    result_daily = (
+                        result
+                        .groupby("_agent_date", as_index=False)
+                        .agg(
+                            _agent_modal_price=(
+                                "_agent_modal_price",
+                                "mean"
+                            ),
+                            _agent_msp=(
+                                "_agent_msp",
+                                "mean"
+                            )
+                        )
+                        .sort_values("_agent_date")
                     )
 
-                st.info(
-                    f"💡 **Business Insight:** {insight}"
-                )
-
-
-        # ----------------------------------------------------
-        # DAILY ARRIVAL TREND
-        # ----------------------------------------------------
-
-        elif (
-            "arrival" in q
-            or "arrivals" in q
-        ) and (
-            "trend" in q
-            or "daily" in q
-        ):
-
-            result = agent_arrivals.copy()
-
-            if detected_crop and "_agent_crop" in result.columns:
-
-                result = result[
-                    result["_agent_crop"]
-                    .astype(str)
-                    .str.contains(
-                        detected_crop,
-                        case=False,
-                        na=False
+                    chart_type = "Line chart"
+                    chart_reason = (
+                        "Time-series comparison of daily market price "
+                        "against MSP."
                     )
-                ]
 
-            if "_agent_date" not in result.columns:
-
-                st.warning(
-                    "No usable arrival date field was found."
-                )
-
-            else:
-
-                result = result.dropna(
-                    subset=["_agent_date"]
-                )
-
-                daily = (
-                    result
-                    .groupby(
-                        "_agent_date",
-                        as_index=False
-                    )["_agent_quantity"]
-                    .sum()
-                )
-
-                daily = daily.sort_values(
-                    "_agent_date"
-                )
-
-                if not daily.empty:
-
-                    daily = daily.tail(30)
-
-                    st.success(
-                        "📈 Agent selected: Daily Arrival Trend"
+                    display_df = result_daily.copy()
+                    display_df["_agent_date"] = (
+                        display_df["_agent_date"].astype(str)
                     )
+
+                    chart_df = result_daily.copy()
 
                     fig = px.line(
-                        daily,
+                        chart_df,
                         x="_agent_date",
-                        y="_agent_quantity",
+                        y=[
+                            "_agent_modal_price",
+                            "_agent_msp"
+                        ],
                         markers=True,
                         title=(
-                            "Daily Arrival Trend"
+                            "Daily Average Market Price vs MSP"
                             + (
-                                f" — {detected_crop.title()}"
-                                if detected_crop
+                                f" — {crop_entity}"
+                                if crop_entity
                                 else ""
                             )
                         )
@@ -1347,115 +1714,118 @@ if st.button("🔎 Analyze Question"):
 
                     fig.update_layout(
                         xaxis_title="Date",
-                        yaxis_title="Arrivals (Qtl)"
+                        yaxis_title="Price (₹)",
+                        height=500
                     )
 
-                    st.plotly_chart(
-                        fig,
-                        use_container_width=True
+                    insight = agent_insight_summary(
+                        intent,
+                        result,
+                        crop=crop_entity,
+                        mandi=mandi_entity
                     )
 
-                    st.info(
-                        "💡 **Business Insight:** "
-                        "The chart highlights the latest 30-day arrival movement "
-                        "and can help identify supply increases or declines."
+            elif intent == "Daily Arrival Trend":
+
+                result = apply_agent_filters(
+                    agent_arrivals,
+                    crop=crop_entity,
+                    mandi=mandi_entity
+                )
+
+                result = result.dropna(
+                    subset=["_agent_date"]
+                )
+
+                if result.empty:
+                    st.warning(
+                        "No valid dated arrival records were found."
                     )
 
+                else:
+                    daily = (
+                        result
+                        .groupby(
+                            "_agent_date",
+                            as_index=False
+                        )["_agent_quantity"]
+                        .sum()
+                        .sort_values("_agent_date")
+                    )
 
-        # ----------------------------------------------------
-        # HIGHEST ARRIVALS BY CROP
-        # ----------------------------------------------------
+                    # Respect the requested natural-language period.
+                    if time_entity == "Last 7 Days":
+                        daily = daily.tail(7)
+                    elif time_entity == "Last 30 Days":
+                        daily = daily.tail(30)
+                    elif time_entity == "Last 90 Days":
+                        daily = daily.tail(90)
+                    elif time_entity == "Current Dashboard Period":
+                        # Use dashboard period when it is not All Time.
+                        if time_period == "Last 7 Days":
+                            daily = daily.tail(7)
+                        elif time_period == "Last 30 Days":
+                            daily = daily.tail(30)
+                        elif time_period == "Last 90 Days":
+                            daily = daily.tail(90)
 
-        elif (
-            "highest" in q
-            or "most" in q
-        ) and (
-            "crop" in q
-            or "arrivals" in q
-        ):
+                    if daily.empty:
+                        st.warning("No arrival records match the selected period.")
+                    else:
+                        chart_type = "Line chart"
+                        chart_reason = (
+                            "A line chart is selected because arrivals "
+                            "are an ordered daily time series."
+                        )
 
-            if "_agent_crop" in agent_arrivals.columns:
+                        display_df = daily.copy()
+                        display_df["_agent_date"] = (
+                            display_df["_agent_date"].astype(str)
+                        )
+
+                        chart_df = daily.copy()
+
+                        fig = px.line(
+                            chart_df,
+                            x="_agent_date",
+                            y="_agent_quantity",
+                            markers=True,
+                            title=(
+                                "Daily Arrival Trend"
+                                + (
+                                    f" — {crop_entity}"
+                                    if crop_entity
+                                    else ""
+                                )
+                            )
+                        )
+
+                        fig.update_layout(
+                            xaxis_title="Date",
+                            yaxis_title="Arrivals (Qtl)",
+                            height=500
+                        )
+
+                        insight = agent_insight_summary(
+                            intent,
+                            result,
+                            crop=crop_entity,
+                            mandi=mandi_entity
+                        )
+
+            elif intent == "Top Crops by Arrivals":
+
+                result = agent_arrivals.copy()
+
+                if "_agent_quantity" not in result.columns:
+                    result["_agent_quantity"] = np.nan
 
                 summary = (
-                    agent_arrivals
+                    result.dropna(
+                        subset=["_agent_quantity"]
+                    )
                     .groupby(
                         "_agent_crop",
-                        as_index=False
-                    )["_agent_quantity"]
-                    .sum()
-                    .sort_values(
-                        "_agent_quantity",
-                        ascending=False
-                    )
-                )
-
-                summary = summary.head(10)
-
-                st.success(
-                    "📊 Agent selected: Crop Arrival Ranking"
-                )
-
-                fig = px.bar(
-                    summary,
-                    x="_agent_crop",
-                    y="_agent_quantity",
-                    title="Top Crops by Total Arrivals",
-                    text_auto=".3s"
-                )
-
-                fig.update_layout(
-                    xaxis_title="Crop",
-                    yaxis_title="Total Arrivals (Qtl)",
-                    xaxis=dict(categoryorder="total descending"),
-                    height=500
-                )
-
-                st.plotly_chart(
-                    fig,
-                    use_container_width=True
-                )
-
-                if not summary.empty:
-
-                    top_crop = summary.iloc[0][
-                        "_agent_crop"
-                    ]
-
-                    st.info(
-                        f"💡 **Business Insight:** "
-                        f"{str(top_crop).title()} has the highest "
-                        f"total recorded arrivals in the analytical dataset."
-                    )
-
-
-        # ----------------------------------------------------
-        # HIGHEST MANDIS
-        # ----------------------------------------------------
-
-        elif (
-            "mandi" in q
-            and (
-                "highest" in q
-                or "top" in q
-                or "most" in q
-            )
-        ):
-
-            mandi_col_agent = find_column(
-                agent_arrivals,
-                [
-                    "mandi_name",
-                    "mandi",
-                    "mandi_id"
-                ]
-            )
-
-            if mandi_col_agent:
-
-                summary = (
-                    agent_arrivals
-                    .groupby(
-                        mandi_col_agent,
                         as_index=False
                     )["_agent_quantity"]
                     .sum()
@@ -1466,41 +1836,303 @@ if st.button("🔎 Analyze Question"):
                     .head(10)
                 )
 
-                st.success(
-                    "📊 Agent selected: Mandi Arrival Ranking"
+                if summary.empty:
+                    st.warning("No crop arrival data is available.")
+                else:
+                    chart_type = "Horizontal bar chart"
+                    chart_reason = (
+                        "A ranked bar chart is selected because the "
+                        "question asks for a category ranking."
+                    )
+
+                    display_df = summary.copy()
+                    chart_df = summary.copy()
+
+                    fig = px.bar(
+                        chart_df,
+                        x="_agent_crop",
+                        y="_agent_quantity",
+                        title="Top Crops by Total Arrivals",
+                        text_auto=".3s"
+                    )
+
+                    fig.update_layout(
+                        xaxis_title="Crop",
+                        yaxis_title="Total Arrivals (Qtl)",
+                        xaxis=dict(categoryorder="total descending"),
+                        height=500
+                    )
+
+                    insight = agent_insight_summary(
+                        intent,
+                        agent_arrivals,
+                        crop=crop_entity,
+                        mandi=mandi_entity
+                    )
+
+            elif intent == "Top Mandis by Arrivals":
+
+                result = apply_agent_filters(
+                    agent_arrivals,
+                    crop=crop_entity,
+                    mandi=None
                 )
 
-                fig = px.bar(
-                    summary,
-                    x=mandi_col_agent,
-                    y="_agent_quantity",
-                    title="Top Mandis by Total Arrivals"
+                if "mandi_id" not in result.columns:
+                    st.warning("Mandi information is unavailable.")
+                else:
+                    summary = (
+                        result.dropna(
+                            subset=["_agent_quantity"]
+                        )
+                        .groupby(
+                            "mandi_id",
+                            as_index=False
+                        )["_agent_quantity"]
+                        .sum()
+                        .sort_values(
+                            "_agent_quantity",
+                            ascending=False
+                        )
+                        .head(10)
+                    )
+
+                    if summary.empty:
+                        st.warning("No mandi arrival data is available.")
+                    else:
+                        chart_type = "Horizontal bar chart"
+                        chart_reason = (
+                            "A ranked bar chart is selected to compare "
+                            "mandis by total arrivals."
+                        )
+
+                        display_df = summary.copy()
+                        chart_df = summary.copy()
+
+                        fig = px.bar(
+                            chart_df,
+                            x="mandi_id",
+                            y="_agent_quantity",
+                            title="Top 10 Mandis by Total Arrivals",
+                            text_auto=".3s"
+                        )
+
+                        fig.update_layout(
+                            xaxis_title="Mandi",
+                            yaxis_title="Total Arrivals (Qtl)",
+                            xaxis_tickangle=-45,
+                            height=500
+                        )
+
+                        insight = agent_insight_summary(
+                            intent,
+                            result,
+                            crop=crop_entity,
+                            mandi=mandi_entity
+                        )
+
+            elif intent == "Weather Impact":
+
+                weather_agent = weather.copy()
+
+                rain_col = find_column(
+                    weather_agent,
+                    ["rainfall_mm", "rainfall", "rain_mm"]
                 )
+
+                if rain_col:
+                    weather_agent["rainfall_mm"] = clean_number(
+                        weather_agent[rain_col]
+                    )
+
+                if "date" in weather_agent.columns:
+                    weather_agent["date"] = pd.to_datetime(
+                        weather_agent["date"],
+                        errors="coerce"
+                    )
+
+                result = weather_agent.dropna(
+                    subset=["rainfall_mm"]
+                    if "rainfall_mm" in weather_agent.columns
+                    else []
+                )
+
+                if result.empty:
+                    st.warning("No weather records are available.")
+                else:
+                    chart_type = "Histogram"
+                    chart_reason = (
+                        "A histogram is selected to show the distribution "
+                        "of rainfall observations."
+                    )
+
+                    display_df = result.head(100).copy()
+                    chart_df = result.copy()
+
+                    fig = px.histogram(
+                        chart_df,
+                        x="rainfall_mm",
+                        title="Rainfall Distribution"
+                    )
+
+                    fig.update_layout(
+                        xaxis_title="Rainfall (mm)",
+                        yaxis_title="Number of Records",
+                        height=500
+                    )
+
+                    insight = agent_insight_summary(
+                        intent,
+                        result
+                    )
+
+            elif intent == "Logistics Performance":
+
+                result = transport.copy()
+
+                if "_transit_hours" not in result.columns:
+                    transit_col = find_column(
+                        result,
+                        [
+                            "transit_hours",
+                            "transit_time",
+                            "travel_hours"
+                        ]
+                    )
+
+                    if transit_col:
+                        result["_transit_hours"] = clean_number(
+                            result[transit_col]
+                        )
+
+                if "_transit_hours" not in result.columns:
+                    st.warning(
+                        "Transit-time information is unavailable."
+                    )
+                else:
+                    result = result.dropna(
+                        subset=["_transit_hours"]
+                    )
+
+                    warehouse_col = find_column(
+                        result,
+                        [
+                            "destination_warehouse",
+                            "warehouse"
+                        ]
+                    )
+
+                    if warehouse_col:
+                        summary = (
+                            result.groupby(
+                                warehouse_col,
+                                as_index=False
+                            )["_transit_hours"]
+                            .mean()
+                            .sort_values(
+                                "_transit_hours",
+                                ascending=False
+                            )
+                        )
+
+                        display_df = summary.copy()
+                        chart_df = summary.copy()
+
+                        chart_type = "Bar chart"
+                        chart_reason = (
+                            "A bar chart is selected to compare average "
+                            "transit performance across warehouses."
+                        )
+
+                        fig = px.bar(
+                            chart_df,
+                            x=warehouse_col,
+                            y="_transit_hours",
+                            title="Average Transit Time by Warehouse",
+                            text_auto=".1f"
+                        )
+
+                        fig.update_layout(
+                            xaxis_title="Warehouse",
+                            yaxis_title="Average Transit Time (hours)",
+                            height=500
+                        )
+
+                    else:
+                        display_df = result[["_transit_hours"]].head(100)
+                        chart_df = result
+
+                        chart_type = "Histogram"
+                        chart_reason = (
+                            "A histogram is selected to show the "
+                            "distribution of transit times."
+                        )
+
+                        fig = px.histogram(
+                            chart_df,
+                            x="_transit_hours",
+                            title="Transit Time Distribution"
+                        )
+
+                        fig.update_layout(
+                            xaxis_title="Transit Time (hours)",
+                            yaxis_title="Number of Records",
+                            height=500
+                        )
+
+                    insight = agent_insight_summary(
+                        intent,
+                        result
+                    )
+
+            # ----------------------------------------------------
+            # SHOW AGENT EXECUTION
+            # ----------------------------------------------------
+
+            if "fig" in locals() and display_df is not None:
+
+                st.markdown("### 🧠 6. DataFrame")
+
+                st.dataframe(
+                    display_df.head(20),
+                    use_container_width=True
+                )
+
+                st.caption(
+                    f"Showing up to 20 rows from the agent's analytical result "
+                    f"({len(display_df):,} rows before display limiting)."
+                )
+
+                st.markdown("### 📊 7. Chart Selection")
+
+                c1, c2 = st.columns(2)
+
+                with c1:
+                    st.success(
+                        f"**Selected chart:** {chart_type}"
+                    )
+
+                with c2:
+                    st.info(chart_reason)
+
+                st.markdown("### 📈 8. Plotly Visualization")
 
                 st.plotly_chart(
                     fig,
                     use_container_width=True
                 )
 
+                st.markdown("### 💡 9. Insight Summary")
 
-        # ----------------------------------------------------
-        # FALLBACK
-        # ----------------------------------------------------
+                st.success(
+                    f"**Business Insight:** {insight}"
+                )
 
-        else:
-
-            st.info(
-                """
-                🤖 **Agent could not confidently map the question.**
-
-                Try questions such as:
-
-                - Show market price vs MSP for Wheat
-                - Show the daily arrival trend of Wheat
-                - Which crop has the highest total arrivals?
-                - Which mandis have the highest arrivals?
-                """
-            )
+                st.caption(
+                    "Agent execution complete: natural language → "
+                    "intent → entities → filters → SQL → dataframe → "
+                    "chart selection → Plotly → insight summary."
+                )
 
 
 # ============================================================
