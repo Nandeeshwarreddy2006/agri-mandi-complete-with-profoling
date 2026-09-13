@@ -7,7 +7,7 @@ solution that turns messy mandi data into clean, query-ready datasets
 and actionable supply-chain insights.
 
 **Live Dashboard:**
-https://agri-mandi-complete-with-profiling-znmfmqknclx6nqktujfrqq.streamlit.app/\
+https://agri-mandi-complete-with-profiling-znmfmqknclx6nqktujfrqq.streamlit.app/
 **GitHub:**
 https://github.com/Nandeeshwarreddy2006/agri-mandi-complete-with-profiling
 
