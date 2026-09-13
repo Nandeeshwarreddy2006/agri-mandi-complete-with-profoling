@@ -45,6 +45,32 @@ def clean_number(series):
     )
 
 
+# ============================================================
+# CROP NAME STANDARDIZATION
+# ============================================================
+
+CROP_MAP = {
+    "basmati": "Rice", "chawal": "Rice", "rice": "Rice",
+    "paddy": "Rice", "dhan": "Rice", "dhaan": "Rice",
+    "धान": "Rice", "चावल": "Rice",
+    "corn": "Maize", "maize": "Maize", "makka": "Maize",
+    "makki": "Maize", "मक्का": "Maize",
+    "cotton": "Cotton", "kapas": "Cotton", "narma": "Cotton",
+    "कपास": "Cotton",
+    "wheat": "Wheat", "gehun": "Wheat", "gehu": "Wheat",
+    "kanak": "Wheat", "गेहूं": "Wheat",
+    "mustard": "Mustard", "sarso": "Mustard", "sarson": "Mustard",
+    "सरसों": "Mustard",
+    "sugarcane": "Sugarcane", "ganna": "Sugarcane",
+    "ganne": "Sugarcane", "गन्ना": "Sugarcane"
+}
+
+def normalize_crop_value(x):
+    if pd.isna(x):
+        return np.nan
+    return CROP_MAP.get(str(x).strip().lower(), np.nan)
+
+
 def find_column(df, candidates):
     """Find the first available column from a list."""
     for col in candidates:
@@ -122,11 +148,8 @@ def load_data():
         arrivals["_quantity"] = np.nan
 
     if crop_col_a:
-        arrivals["_crop"] = (
-            arrivals[crop_col_a]
-            .astype(str)
-            .str.strip()
-        )
+        arrivals["_crop"] = arrivals[crop_col_a].apply(normalize_crop_value)
+        arrivals[crop_col_a] = arrivals["_crop"]
 
     # -----------------------------
     # PRICES
@@ -156,11 +179,8 @@ def load_data():
     )
 
     if crop_col_p:
-        prices["_crop"] = (
-            prices[crop_col_p]
-            .astype(str)
-            .str.strip()
-        )
+        prices["_crop"] = prices[crop_col_p].apply(normalize_crop_value)
+        prices[crop_col_p] = prices["_crop"]
 
     if modal_col:
         prices["_modal_price"] = clean_number(prices[modal_col])
@@ -565,12 +585,15 @@ if crop_col:
             crop_summary,
             x=crop_col,
             y="_quantity",
-            title="Total Arrivals by Crop"
+            title="Total Arrivals by Crop",
+            text_auto=".3s"
         )
 
         fig.update_layout(
             xaxis_title="Crop",
-            yaxis_title="Arrival Quantity (Qtl)"
+            yaxis_title="Arrival Quantity (Qtl)",
+            xaxis=dict(categoryorder="total descending", tickangle=0),
+            height=500
         )
 
         st.plotly_chart(
@@ -612,17 +635,28 @@ if "_date" in prices.columns:
 
     if not price_chart.empty:
 
+        price_daily = (
+            price_chart
+            .groupby("_date", as_index=False)
+            .agg(
+                _modal_price=("_modal_price", "mean"),
+                _msp=("_msp", "mean")
+            )
+            .sort_values("_date")
+        )
+
         fig = px.line(
-            price_chart.sort_values("_date"),
+            price_daily,
             x="_date",
             y=["_modal_price", "_msp"],
             markers=True,
-            title="Market Price vs MSP"
+            title="Daily Average Market Price vs MSP"
         )
 
         fig.update_layout(
             xaxis_title="Date",
-            yaxis_title="Price (₹)"
+            yaxis_title="Price (₹)",
+            height=500
         )
 
         st.plotly_chart(
@@ -887,18 +921,26 @@ if st.button("🔎 Analyze Question"):
                     "📊 Agent selected: Market Price vs MSP line chart"
                 )
 
+                result_daily = (
+                    result
+                    .groupby("_agent_date", as_index=False)
+                    .agg(
+                        _agent_modal_price=("_agent_modal_price", "mean"),
+                        _agent_msp=("_agent_msp", "mean")
+                    )
+                    .sort_values("_agent_date")
+                )
+
                 fig = px.line(
-                    result,
-                    x="_agent_date"
-                    if "_agent_date" in result.columns
-                    else result.index,
+                    result_daily,
+                    x="_agent_date",
                     y=[
                         "_agent_modal_price",
                         "_agent_msp"
                     ],
                     markers=True,
                     title=(
-                        f"Market Price vs MSP"
+                        "Daily Average Market Price vs MSP"
                         + (
                             f" — {detected_crop.title()}"
                             if detected_crop
@@ -909,7 +951,8 @@ if st.button("🔎 Analyze Question"):
 
                 fig.update_layout(
                     xaxis_title="Date",
-                    yaxis_title="Price (₹)"
+                    yaxis_title="Price (₹)",
+                    height=500
                 )
 
                 st.plotly_chart(
@@ -1080,12 +1123,15 @@ if st.button("🔎 Analyze Question"):
                     summary,
                     x="_agent_crop",
                     y="_agent_quantity",
-                    title="Top Crops by Total Arrivals"
+                    title="Top Crops by Total Arrivals",
+                    text_auto=".3s"
                 )
 
                 fig.update_layout(
                     xaxis_title="Crop",
-                    yaxis_title="Total Arrivals (Qtl)"
+                    yaxis_title="Total Arrivals (Qtl)",
+                    xaxis=dict(categoryorder="total descending"),
+                    height=500
                 )
 
                 st.plotly_chart(
