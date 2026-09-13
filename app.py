@@ -65,6 +65,16 @@ CROP_MAP = {
     "ganne": "Sugarcane", "गन्ना": "Sugarcane"
 }
 
+
+VALID_CROPS = [
+    "Cotton",
+    "Maize",
+    "Mustard",
+    "Rice",
+    "Sugarcane",
+    "Wheat"
+]
+
 def normalize_crop_value(x):
     if pd.isna(x):
         return np.nan
@@ -1638,6 +1648,12 @@ if st.button("🔎 Analyze Question"):
             # 6. DATAFRAME + 7. CHART SELECTION
             # ----------------------------------------------------
 
+            display_df = None
+            fig = None
+            chart_type = None
+            chart_reason = None
+            insight = None
+
             if intent == "Price vs MSP":
 
                 result = apply_agent_filters(
@@ -2089,7 +2105,7 @@ if st.button("🔎 Analyze Question"):
             # SHOW AGENT EXECUTION
             # ----------------------------------------------------
 
-            if "fig" in locals() and display_df is not None:
+            if fig is not None and display_df is not None:
 
                 st.markdown("### 🧠 6. DataFrame")
 
