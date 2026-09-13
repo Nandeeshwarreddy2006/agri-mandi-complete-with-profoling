@@ -28,19 +28,25 @@ The profiling was performed in:
 
 `01_data_profiling.ipynb`
 
----
+## 2. Raw → Cleaned Dataset Evidence
 
-## 2. Raw Dataset Evidence
+The following table shows the transformation from the organizer-provided raw datasets to the analytics-ready datasets used in the project.
 
-| Dataset | Raw Rows | Main Data Quality Issues |
-|---|---:|---|
-| Mandi Master | 60 | Duplicate records, missing district/state/type, inconsistent IDs |
-| Mandi Arrivals | 25,750 | 750 exact duplicates, duplicate IDs, messy crop names, mixed units, missing farmer counts |
-| Price & MSP | 12,000 | String-formatted prices, missing price/MSP values, inconsistent crop/mandi information |
-| Weather Sensors | 15,000 | Missing timestamps, mixed Celsius/Fahrenheit, mixed rainfall units, missing humidity |
-| Transport Logistics | 10,400 | 400 exact duplicates, duplicate trip IDs, missing fields, mixed KM/miles, invalid transit values |
+| Dataset | Raw Rows | Cleaned / Output Rows | Main Data Quality Issues |
+|---|---:|---:|---|
+| Mandi Master | 60 | 57 | Duplicate records, missing district/state/type, inconsistent IDs |
+| Mandi Arrivals | 25,750 | 25,750 | Duplicate IDs, messy crop names, mixed units, missing farmer counts |
+| Price & MSP | 12,000 | 12,000 | String-formatted prices, missing price/MSP values, inconsistent crop/mandi information |
+| Weather Sensors | 15,000 | 151 daily records | Missing timestamps, mixed Celsius/Fahrenheit, mixed rainfall units, missing humidity |
+| Transport Logistics | 10,400 | 10,400 | Duplicate records, duplicate trip IDs, missing fields, mixed KM/miles, invalid transit values |
 
----
+### Important Notes
+
+- **Mandi Master:** 60 raw rows were reduced to 57 records after duplicate handling.
+- **Mandi Arrivals:** The analytics-ready arrivals table contains 25,750 records. Cleaning focused on standardization, unit conversion, date normalization and data-quality handling.
+- **Price & MSP:** The analytics-ready price table contains 12,000 records after numeric and format standardization.
+- **Weather:** 15,000 sensor-level observations were transformed into **151 daily records** through date-based aggregation. Therefore, the weather output row count is intentionally not a one-to-one comparison with the raw dataset.
+- **Transport:** The analytics-ready transport table contains 10,400 records after cleaning and standardization.
 
 # 3. Cleaning Operations
 
