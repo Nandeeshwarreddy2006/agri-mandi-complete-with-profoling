@@ -105,6 +105,11 @@ def load_data():
     prices = pd.read_csv(PRICES_FILE)
     mandi = pd.read_csv(MANDI_FILE)
 
+    # Standardize mandi IDs consistently across datasets.
+    for df in [arrivals, prices, mandi]:
+        if "mandi_id" in df.columns:
+            df["mandi_id"] = df["mandi_id"].apply(normalize_mandi_value)
+
     try:
         transport = pd.read_csv(TRANSPORT_FILE)
     except Exception:
@@ -390,21 +395,16 @@ crop_col = find_column(
 )
 
 if crop_col:
-
-    crop_values = sorted(
-        arrivals[crop_col]
-        .dropna()
-        .astype(str)
-        .unique()
-    )
+    crop_values = [
+        c for c in VALID_CROPS
+        if c in arrivals[crop_col].dropna().astype(str).unique()
+    ]
 
     selected_crop = st.sidebar.selectbox(
         "🌾 Crop",
         ["All"] + crop_values
     )
-
 else:
-
     selected_crop = "All"
 
 
@@ -415,7 +415,6 @@ mandi_col = find_column(
 )
 
 if mandi_col:
-
     mandi_values = sorted(
         arrivals[mandi_col]
         .dropna()
@@ -427,14 +426,80 @@ if mandi_col:
         "🏪 Mandi",
         ["All"] + mandi_values
     )
-
 else:
-
     selected_mandi = "All"
 
 
+# Time period filter
+st.sidebar.subheader("📅 Time Period")
+
+if "_date" in arrivals.columns:
+    arrival_dates = pd.to_datetime(arrivals["_date"], errors="coerce")
+    min_date = arrival_dates.min()
+    max_date = arrival_dates.max()
+
+    time_period = st.sidebar.selectbox(
+        "Select Time Period",
+        ["All Time", "Last 7 Days", "Last 30 Days", "Last 90 Days", "Custom"]
+    )
+
+    if time_period == "Last 7 Days":
+        period_start = max_date - pd.Timedelta(days=6)
+        period_end = max_date
+
+    elif time_period == "Last 30 Days":
+        period_start = max_date - pd.Timedelta(days=29)
+        period_end = max_date
+
+    elif time_period == "Last 90 Days":
+        period_start = max_date - pd.Timedelta(days=89)
+        period_end = max_date
+
+    elif time_period == "Custom":
+        default_range = (min_date.date(), max_date.date())
+
+        custom_range = st.sidebar.date_input(
+            "Choose Date Range",
+            value=default_range,
+            min_value=min_date.date(),
+            max_value=max_date.date()
+        )
+
+        if isinstance(custom_range, tuple) and len(custom_range) == 2:
+            period_start = pd.Timestamp(custom_range[0])
+            period_end = pd.Timestamp(custom_range[1])
+        else:
+            period_start = min_date
+            period_end = max_date
+
+    else:
+        period_start = min_date
+        period_end = max_date
+else:
+    time_period = "All Time"
+    period_start = None
+    period_end = None
+
+
 # Apply filters
+
 filtered_arrivals = arrivals.copy()
+
+# Apply selected time period
+if (
+    period_start is not None
+    and period_end is not None
+    and "_date" in filtered_arrivals.columns
+):
+    _arrival_dates = pd.to_datetime(
+        filtered_arrivals["_date"], errors="coerce"
+    )
+    filtered_arrivals = filtered_arrivals[
+        _arrival_dates.between(
+            pd.Timestamp(period_start),
+            pd.Timestamp(period_end)
+        )
+    ]
 
 if selected_crop != "All" and crop_col:
     filtered_arrivals = filtered_arrivals[
@@ -803,6 +868,217 @@ if not weather.empty:
                 fig,
                 use_container_width=True
             )
+
+
+# ============================================================
+# BUSINESS INSIGHTS & ALERTS
+# ============================================================
+
+st.divider()
+st.subheader("💡 Business Insights & Alerts")
+
+insight_cols = st.columns(4)
+
+# Price alert
+price_alert_count = 0
+below_msp_crops = []
+
+if "_modal_price" in prices.columns and "_msp" in prices.columns:
+    price_check = prices.dropna(subset=["_modal_price", "_msp"]).copy()
+    if not price_check.empty:
+        price_check["gap_pct"] = (
+            (price_check["_modal_price"] - price_check["_msp"])
+            / price_check["_msp"].replace(0, np.nan)
+            * 100
+        )
+        price_alert_count = int((price_check["gap_pct"] < 0).sum())
+
+        if "_crop" in price_check.columns:
+            below_msp_crops = (
+                price_check.groupby("_crop")["gap_pct"]
+                .mean()
+                .sort_values()
+            )
+            below_msp_crops = [
+                c for c in below_msp_crops.index
+                if pd.notna(c)
+            ][:3]
+
+with insight_cols[0]:
+    st.metric("⚠️ Below-MSP Records", f"{price_alert_count:,}")
+
+# Supply alert
+supply_alert = "Stable"
+if "_date" in filtered_arrivals.columns and len(filtered_arrivals) > 0:
+    daily_check = (
+        filtered_arrivals.dropna(subset=["_date"])
+        .groupby("_date")["_quantity"]
+        .sum()
+        .sort_index()
+    )
+    if len(daily_check) >= 14:
+        recent = daily_check.tail(7).mean()
+        previous = daily_check.iloc[-14:-7].mean()
+        if previous > 0:
+            change = (recent - previous) / previous * 100
+            if change <= -20:
+                supply_alert = "Supply Decline"
+            elif change >= 20:
+                supply_alert = "Supply Surge"
+
+with insight_cols[1]:
+    st.metric("📦 Supply Signal", supply_alert)
+
+# Logistics alert
+avg_transit_alert = np.nan
+if not transport.empty and "_transit_hours" in transport.columns:
+    avg_transit_alert = transport["_transit_hours"].mean()
+
+with insight_cols[2]:
+    st.metric(
+        "🚚 Avg Transit",
+        f"{avg_transit_alert:.1f} hrs"
+        if pd.notna(avg_transit_alert)
+        else "N/A"
+    )
+
+# Weather alert
+avg_rain_alert = np.nan
+if not weather.empty:
+    rain_alert_col = find_column(
+        weather, ["rainfall_mm", "rainfall", "rain_mm"]
+    )
+    if rain_alert_col:
+        avg_rain_alert = clean_number(weather[rain_alert_col]).mean()
+
+with insight_cols[3]:
+    st.metric(
+        "🌧️ Avg Rainfall",
+        f"{avg_rain_alert:.1f} mm"
+        if pd.notna(avg_rain_alert)
+        else "N/A"
+    )
+
+# Human-readable insights
+if below_msp_crops:
+    st.warning(
+        "⚠️ **Price Alert:** "
+        + ", ".join(below_msp_crops)
+        + " show the strongest average price pressure versus MSP."
+    )
+
+if supply_alert == "Supply Decline":
+    st.warning(
+        "📉 **Supply Alert:** Recent 7-day arrivals are materially below "
+        "the preceding 7-day period."
+    )
+elif supply_alert == "Supply Surge":
+    st.success(
+        "📈 **Supply Signal:** Recent 7-day arrivals are materially above "
+        "the preceding 7-day period."
+    )
+else:
+    st.info("✅ **Supply Signal:** No major short-term supply shock detected.")
+
+
+# ============================================================
+# PRICE INTELLIGENCE
+# ============================================================
+
+st.subheader("💰 Price Intelligence")
+
+if "_modal_price" in prices.columns and "_msp" in prices.columns:
+    price_intel = prices.copy()
+
+    if selected_crop != "All" and "_crop" in price_intel.columns:
+        price_intel = price_intel[
+            price_intel["_crop"].astype(str).str.lower()
+            == selected_crop.lower()
+        ]
+
+    price_intel = price_intel.dropna(
+        subset=["_modal_price", "_msp"]
+    ).copy()
+
+    if not price_intel.empty:
+        price_intel["Price_Gap"] = (
+            price_intel["_modal_price"] - price_intel["_msp"]
+        )
+
+        price_intel["Price_Gap_%"] = (
+            price_intel["Price_Gap"]
+            / price_intel["_msp"].replace(0, np.nan)
+            * 100
+        )
+
+        p1, p2, p3, p4 = st.columns(4)
+
+        avg_market_intel = price_intel["_modal_price"].mean()
+        avg_msp_intel = price_intel["_msp"].mean()
+        avg_gap_intel = price_intel["Price_Gap_%"].mean()
+        below_count = int((price_intel["Price_Gap"] < 0).sum())
+
+        p1.metric("Market Price", f"₹{avg_market_intel:,.0f}")
+        p2.metric("MSP", f"₹{avg_msp_intel:,.0f}")
+        p3.metric(
+            "Average Price Gap",
+            f"{avg_gap_intel:+.1f}%"
+        )
+        p4.metric("Below-MSP Records", f"{below_count:,}")
+
+        if "_crop" in price_intel.columns:
+            crop_price_intel = (
+                price_intel.groupby("_crop", as_index=False)
+                .agg(
+                    Market_Price=("_modal_price", "mean"),
+                    MSP=("_msp", "mean")
+                )
+            )
+
+            crop_price_intel["Gap_%"] = (
+                (crop_price_intel["Market_Price"]
+                 - crop_price_intel["MSP"])
+                / crop_price_intel["MSP"].replace(0, np.nan)
+                * 100
+            )
+
+            fig = px.bar(
+                crop_price_intel.sort_values("Gap_%"),
+                x="_crop",
+                y="Gap_%",
+                title="Price Gap vs MSP by Crop",
+                text_auto=".1f"
+            )
+
+            fig.add_hline(
+                y=0,
+                line_dash="dash"
+            )
+
+            fig.update_layout(
+                xaxis_title="Crop",
+                yaxis_title="Price Gap vs MSP (%)",
+                height=450
+            )
+
+            st.plotly_chart(
+                fig,
+                use_container_width=True
+            )
+
+            display_cols = [
+                "_crop", "Market_Price", "MSP", "Gap_%"
+            ]
+
+            st.dataframe(
+                crop_price_intel[display_cols]
+                .sort_values("Gap_%"),
+                use_container_width=True
+            )
+    else:
+        st.info("No valid price intelligence records available.")
+else:
+    st.info("Price intelligence data is unavailable.")
 
 
 # ============================================================
