@@ -43,3 +43,17 @@ Business Insights
 Interactive Dashboard
    ↓
 Agentic AI
+## 📈 Live Dashboard
+
+🔗 **Live Dashboard:**  
+https://agri-mandi-complete-with-profiling-znmfmqknclx6nqktujfrqq.streamlit.app/
+
+The interactive dashboard provides analysis of:
+
+- Crop arrivals
+- Market prices
+- MSP comparison
+- Mandi performance
+- Crop distribution
+- Logistics
+- Weather impact
