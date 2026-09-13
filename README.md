@@ -1,23 +1,45 @@
-# Agri Mandi-to-Market Supply Chain Optimizer
+# 🌾 Agri Mandi-to-Market Supply Chain Optimizer
 
-## Notebook order
-1. 01_data_profiling.ipynb — existing profiling notebook
-2. 02_data_cleaning.ipynb
-3. 03_data_validation.ipynb
-4. 04_data_model.ipynb
-5. 05_analytics.ipynb
-6. 06_insights.ipynb
-7. dashboard/app.py
-8. agent/agent.py
+## TransOrg AgentIQ Datathon – Track 3: AgriTech
 
-## Important
-In every notebook, change:
-`BASE = Path(r"C:\CHANGE\THIS\TO\YOUR\PROJECT")`
-to your project folder.
+An end-to-end AgriTech analytics solution that transforms messy mandi data into clean, validated and actionable insights.
 
-Run notebooks in order because later notebooks use the CSV files produced by earlier notebooks.
+The project analyzes crop arrivals, market prices, MSP, weather conditions and transportation/logistics performance.
 
-## Dashboard
-From the project folder:
-`pip install -r requirements.txt`
-`streamlit run dashboard/app.py`
+## 🎯 Problem Statement
+
+The mandi datasets contain several real-world data quality issues such as:
+
+- Inconsistent crop names in English, Hindi and Punjabi
+- Mixed quantity units such as KG, Quintals and Tonnes
+- Inconsistent mandi IDs
+- Messy price and currency formats
+- Mixed weather units
+- UTC and IST timestamp differences
+- Mixed KM and Miles
+- Duplicate records
+- Missing values
+- Invalid transport records
+
+This project cleans and standardizes the data and converts it into an analytical model for decision-making.
+
+## 🏗️ Project Workflow
+
+```text
+Raw Data
+   ↓
+Data Profiling
+   ↓
+Data Cleaning
+   ↓
+Data Validation
+   ↓
+Data Modeling
+   ↓
+Analytics & KPIs
+   ↓
+Business Insights
+   ↓
+Interactive Dashboard
+   ↓
+Agentic AI
