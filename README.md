@@ -9,7 +9,7 @@ and actionable supply-chain insights.
 **Live Dashboard:**
 https://agri-mandi-complete-with-profiling-znmfmqknclx6nqktujfrqq.streamlit.app/
 **GitHub:**
-https://github.com/Nandeeshwarreddy2006/agri-mandi-complete-with-profiling
+https://github.com/Nandeeshwarreddy2006/agri-mandi-complete-with-profoling
 
 ------------------------------------------------------------------------
 
@@ -530,7 +530,7 @@ insight.
 ## 22. Submission Links
 
 **GitHub:**\
-https://github.com/Nandeeshwarreddy2006/agri-mandi-complete-with-profiling
+https://github.com/Nandeeshwarreddy2006/agri-mandi-complete-with-profoling
 
 **Live Dashboard:**\
 https://agri-mandi-complete-with-profiling-znmfmqknclx6nqktujfrqq.streamlit.app/
